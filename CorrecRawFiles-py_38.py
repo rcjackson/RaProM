@@ -235,13 +235,13 @@ def CorrectorFile(fid):
     f1.close()
     f.close()
 ######    NOW DELETE THE FILES CORRECTED IF THERE AREN'T CORRECTIONS. m is for jumps correction, lineCount for error corrections and CountM for repetitions header
-    if m==0 and lineCount==0 and CountM==0:
+    if m==0 and lineCount==0 and CountM==0:#file correct
         os.remove(FileCorre)
         os.remove(FileCorre2)
         os.remove(FileCorre3)
 
         OutName=NameFile
-    if m==0 and lineCount!=0 and CountM==0:
+    if m==0 and lineCount!=0 and CountM==0:#file with errors in lines
         shutil.copy(os.path.join('folder', NameFile), folderName)
         os.remove(NameFile)
 
@@ -249,7 +249,7 @@ def CorrectorFile(fid):
         os.remove(FileCorre3)
         OutName=FileCorre2
         os.rename(FileCorre2,OutNameFile+'.raw')
-    if m==0 and lineCount==0 and CountM!=0:
+    if m==0 and lineCount==0 and CountM!=0:#file with header repetition
         shutil.copy(os.path.join('folder', NameFile), folderName)
         os.remove(NameFile)
 
@@ -257,7 +257,7 @@ def CorrectorFile(fid):
         os.remove(FileCorre3)
         OutName=FileCorre
         os.rename(FileCorre,OutNameFile+'.raw')
-    if m!=0 and lineCount==0 and CountM==0:
+    if m!=0 and lineCount==0 and CountM==0:# file with time jumps backward
         shutil.copy(os.path.join('folder', NameFile), folderName)
         os.remove(NameFile)
 
@@ -266,7 +266,34 @@ def CorrectorFile(fid):
         OutName=FileCorre3
         os.rename(FileCorre3,OutNameFile+'.raw')
 
-    if m!=0 and lineCount!=0 and CountM!=0:
+    if m!=0 and lineCount!=0 and CountM==0:#file with time jumps backward and errors in lines
+        shutil.copy(os.path.join('folder', NameFile), folderName)
+        os.remove(NameFile)
+
+        os.remove(FileCorre)
+        os.remove(FileCorre2)
+        OutName=FileCorre3
+        os.rename(FileCorre3,OutNameFile+'.raw')
+
+    if m==0 and lineCount!=0 and CountM!=0:#file with header repetition and errors in lines
+        shutil.copy(os.path.join('folder', NameFile), folderName)
+        os.remove(NameFile)
+
+        os.remove(FileCorre)
+        os.remove(FileCorre3)
+        OutName=FileCorre2
+        os.rename(FileCorre2,OutNameFile+'.raw')
+
+    if m!=0 and lineCount==0 and CountM!=0:#file with time jumps backward and header repetition
+        shutil.copy(os.path.join('folder', NameFile), folderName)
+        os.remove(NameFile)
+
+        os.remove(FileCorre)
+        os.remove(FileCorre2)
+        OutName=FileCorre3
+        os.rename(FileCorre3,OutNameFile+'.raw')
+
+    if m!=0 and lineCount!=0 and CountM!=0:#file with all problems
 
         shutil.copy(os.path.join('folder', NameFile), folderName)
         os.remove(NameFile)
