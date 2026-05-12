@@ -3,6 +3,7 @@
 ###ORCID: 0000-0002-5560-4392
 ##202411- The new version includes the improve definitions and the M value to adjust the calibration constant
 ##      - The new version includes the modification the calculation of Ze, including the speed resolution.
+##202504- This version is adpated to numpy 1.21 and python 3.11
 
 
 
@@ -12,7 +13,7 @@ import datetime
 import time
 import miepython as mp
 from math import e
-from netCDF4 import Dataset,num2date,date2num
+from netCDF4 import Dataset,date2num
 import glob
 import os
 import sys
@@ -131,7 +132,7 @@ def Rain_Par(state,Z,LWC,RR,Nw,Dm,NewM,D,N_da,NdE,he,w,Pia):
 
             value=np.nansum(np.prod([np.power(D[m],6),LastN,dif2],axis=0))
             value2=np.nansum(np.prod([np.power(D[m],3),LastN,dif2],axis=0))
-            value3=np.nansum(np.prod([np.power(D[m],3),LastN,dif2,w[m]],axis=0))
+            value3=np.nansum(np.prod([np.power(D[m],3),LastN,dif2],axis=0))*w[m]
             value4=np.nansum(np.prod([np.power(D[m],4),LastN,dif2],axis=0))
                 
             if np.nansum(nde)<=0.:
@@ -297,83 +298,100 @@ def BB(v,Z,h):#the input are fall speed, equivalent reflectivity and height
 
 
 def CorrectorFile(fid):
-    NameFile=fid 
+    NameFile=fid
 
     FileCorre=NameFile[:-4]+'-corrected.raw' #create a new file
 
-    
-
-    folderName='Moved'
+    # Place the Moved/ archive next to the input file rather than in cwd,
+    # so this function works whether or not the caller has chdir'd.
+    folderName=os.path.join(os.path.dirname(os.path.abspath(NameFile)), 'Moved')
     if not os.path.exists(folderName):
         os.mkdir(folderName)
-    
-    f1=open(FileCorre,'w+')
+
+    with open(NameFile,'r') as fcount:
+        file_length = len(fcount.read().split('\n'))
+    # Round up so trailing partial records are still inspected. The inner
+    # loop also breaks on EOF, so this only bounds the iteration count.
+    totallines = max(0, (file_length - 7 + 66) // 67) + 1
+
+    m=0
+    badrec=0
+    timeList=list()
 
     f=open(NameFile,'r')
-    file_length = len(f.read().split('\n'))
-    totallines=(file_length-7)/67
-    
-    m=0
-    timeList=list()
-    f.close()
-    f=open(NameFile,'r')
+    f1=open(FileCorre,'w+')
 
     for i in range(int(totallines)):
         line=f.readline()
-    
-    
+        if line=='':
+            break
+
         line2=line.strip()
         columns=line2.split()
-    
-        if len(columns)==1:
-            longStr=2
-        else:
+
+        # Only treat as a well-formed M-line when we actually have a
+        # second column. Without this guard, len(columns)<2 would raise
+        # NameError on `Date` later.
+        Date=None
+        longStr=0
+        if len(columns)>=2:
             Date=columns[1]
             longStr=len(str(Date))
-       
-       
-        
-            
-        
-        if len(timeList)==0:
-            dat = datetime.datetime(year = 2000+int(Date[0:2]), month = int(Date[2:4]), day = int(Date[4:6]), hour = int(Date[6:8]), minute = int(Date[8:10]), second = int(Date[10:12]))
-            dat=int(date2unix(dat))
-            for j in range(67):
-                
-                f1.write(line)
-                
-                if j<66:
-                    line=f.readline()
-            timeList.append(dat)
-        else:
 
-            if longStr==12:
+        try:
+            if len(timeList)==0:
+                if Date is None or longStr!=12:
+                    raise ValueError(
+                        'no valid record accepted yet; skipping malformed '
+                        'M-line: %r' % (line2[:80],))
                 dat = datetime.datetime(year = 2000+int(Date[0:2]), month = int(Date[2:4]), day = int(Date[4:6]), hour = int(Date[6:8]), minute = int(Date[8:10]), second = int(Date[10:12]))
                 dat=int(date2unix(dat))
-                if timeList[-1]<dat:
-                    
-                    for j in range(67):
-                        f1.write(line)
-                        if j<66:
-                            line=f.readline()
-                    timeList.append(dat)
-
-            
+                for j in range(67):
+                    f1.write(line)
+                    if j<66:
+                        line=f.readline()
+                timeList.append(dat)
             else:
-                m=m+1
+                if longStr==12:
+                    dat = datetime.datetime(year = 2000+int(Date[0:2]), month = int(Date[2:4]), day = int(Date[4:6]), hour = int(Date[6:8]), minute = int(Date[8:10]), second = int(Date[10:12]))
+                    dat=int(date2unix(dat))
+                    if timeList[-1]<dat:
+                        for j in range(67):
+                            f1.write(line)
+                            if j<66:
+                                line=f.readline()
+                        timeList.append(dat)
+                else:
+                    m=m+1
+        except (ValueError, IndexError) as exc:
+            badrec += 1
+            sys.stderr.write(
+                '  CorrectorFile: skipped record %d in %s (%s)\n'
+                % (i, NameFile, exc))
 
-          
     f1.close()
     f.close()
-    if m==0:
+    if m==0 and badrec==0:
         os.remove(FileCorre)
         OutName=NameFile
+    elif len(timeList)==0:
+        # Every record failed to parse. Don't move the original aside or
+        # hand the parser an empty file -- surface the problem instead.
+        os.remove(FileCorre)
+        raise RuntimeError(
+            'CorrectorFile: %s has no valid records (badrec=%d). '
+            'Original left in place.' % (NameFile, badrec))
     else:
-        shutil.copy(os.path.join('folder', NameFile), folderName)
+        # Move the original aside (the previous code joined a literal
+        # 'folder' into the path, which only worked by accident when
+        # NameFile happened to be absolute).
+        shutil.copy(NameFile, folderName)
         os.remove(NameFile)
         OutName=FileCorre
         print('A new file with the same name but finished as -corrected is created ')
-        print('From file ',NameFile,' ',m, 'rows were deleted',)
+        print('From file ',NameFile,' ',m, 'rows were deleted for time inconsistencies')
+        if badrec:
+            print('From file ',NameFile,' ',badrec, 'records were skipped for parse errors')
 
     return OutName
 
@@ -1141,7 +1159,7 @@ def Process(matrix,he,temps,D):#This is the core from the preocessing
 
                 value=np.nansum(np.prod([np.power(D[m],6),LastN,dif2],axis=0))
                 value2=np.nansum(np.prod([np.power(D[m],3),LastN,dif2],axis=0))
-                value3=np.nansum(np.prod([np.power(D[m],3),LastN,dif2,w],axis=0))
+                value3=np.nansum(np.prod([np.power(D[m],3),LastN,dif2],axis=0)*w)
                 value4=np.nansum(np.prod([np.power(D[m],4),LastN,dif2],axis=0))
                 
                 if np.nansum(nde)<=0.:
@@ -1470,7 +1488,8 @@ def ScatExt(diameter,longW):#for 1 height gate
 
     ag_mre=6.417
     ag_mim=2.758
-    m = ag_mre + 1.0j * ag_mim
+    # miepython >=3 uses m = n - ik convention (positive k = absorption).
+    m = ag_mre - 1.0j * ag_mim
     
     scatt=[];extinct=[]
     for i in range(len(diameter)):
@@ -1483,7 +1502,8 @@ def ScatExt(diameter,longW):#for 1 height gate
         else:
             
             x = 2*np.pi*r/ag_lam;#is non dimension, so the ag_lam and r have the same units
-            qext, qsca, qback, g = mp.mie(m,x)
+            # miepython >=3 renamed mie() to efficiencies_mx(); same 4-tuple return.
+            qext, qsca, qback, g = mp.efficiencies_mx(m,x)
             absorb  = (qext - qsca) * np.pi * r**2
             scatt.append(qsca * np.pi * r**2)
             extinct.append(qext* np.pi * r**2)
@@ -1589,52 +1609,49 @@ if not sys.warnoptions:
 
 
 
-print('Insert the path where the raw are --for instance d:\Mrrdata/')
-Root=input()  #input from the user 
-os.chdir(Root)
+def process_file(path, integration_time=60, height=None, calibration=1.0, verbose=True):
+    """Process a single MRR raw file and write a netCDF beside it.
 
-########INCLUDE THE OPTIONS IN EXECUTATION
+    Parameters
+    ----------
+    path : str
+        Path to a `.raw` file.
+    integration_time : int, default 60
+        Integration window in seconds.
+    height : float or None, default None
+        Override the antenna height (m a.s.l.). None keeps the value from
+        the raw file (output heights are then a.g.l.).
+    calibration : float, default 1.0
+        Multiplicative bias for the MRR calibration constant.
+    verbose : bool, default True
+        Print progress messages and the spinner.
 
-if len(sys.argv)==1:
-    option=0
-h0_opt=np.nan;Adjust_M=1.#c_opt=0;c1=0;c2=0;c3=0;h0_opt=np.nan
-if len(sys.argv)>1:
-    for i in sys.argv:
+    Returns
+    -------
+    str
+        Absolute path to the produced `-processed.nc` file.
+    """
+    # These names are read from module scope by Process()/Rain_Par(); we
+    # write them here so each call configures the helpers for this file.
+    # Concurrent process_file() calls would race on these globals --
+    # safe for single-threaded notebook/CLI use.
+    global Cte, dv, SigmaScatt, SigmaExt, speed
+    # Local aliases for legacy variable names used throughout the body.
+    name = os.path.abspath(path)
+    h0_opt = float('nan') if height is None else float(height)
+    Adjust_M = float(calibration)
+    IntTime = int(integration_time)
+    _verbose = bool(verbose)
 
-        if i[0:2]=='-h':
-            #print('The first height has been changed\n')
-            h0_opt=float(i[2:])
-        if i[0:2]=='-M':
-            #print('The calibration constant has been changed\n')
-            Adjust_M=float(i[2:])
-##            print('M value',Adjust_M)
-
-if ~np.isnan(h0_opt):
-    print('\nThe antenna height has been changed to ',str(h0_opt),' m\n')
-
-if Adjust_M!=1.:
-    print('\nThe calibration constant has been adjusted by M ',str(Adjust_M),' m\n')
-
-print('Insert the number of seconds for integration (usually 60 seconds)')
-IntTime=input()
-IntTime=int(IntTime)
-
-folder=Root
-dircf=glob.glob(Root+'*.raw')
-dircf=np.sort(dircf)
-print('In this folder there are '+str(len(dircf))+' raw files')
-print('The script generate netcdf file with the same name of raw files\n')
-
-for name in dircf:
-    
-    NameFile=name 
+    NameFile=name
     Nw_2=[];Dm_2=[]
 
     
 
     count=0
     NameFile=CorrectorFile(NameFile)
-    print('File in process  '+str(NameFile[:-4]))
+    if _verbose:
+        print('File in process  '+str(NameFile[:-4]))
     filenameplot=NameFile[:-4]+'-processed'
 
     f=open(NameFile,'r')
@@ -1646,9 +1663,9 @@ for name in dircf:
     HIcolum=Hini.split()
     HIcolum=map(int,HIcolum[1:len(HIcolum)])#Get the height values and change to integer
     if np.isnan(h0_opt):
-        HIcolum2=np.fromiter(HIcolum,dtype=np.int)
+        HIcolum2=np.fromiter(HIcolum,dtype=int)
     else:
-        HIcolum2=h0_opt+np.fromiter(HIcolum,dtype=np.int)
+        HIcolum2=h0_opt+np.fromiter(HIcolum,dtype=int)
 
 ##    print('altures',HIcolum2)
     ##Found the parameters dv in function of the height (mrr physics equation)
@@ -1680,7 +1697,7 @@ for name in dircf:
         D.append(d)#dimension 31 x 64 in mm
 
 
-    dataset=Dataset(filenameplot+'.nc','w',format='NETCDF4')
+    dataset=Dataset(str(filenameplot+'.nc'),mode='w',format='NETCDF4')
     dataset.description='Data processed by MRR radar'
     dataset.author='Albert Garcia Benad'+u'\xed'
     dataset.orcid='0000-0002-5560-4392 '
@@ -1773,10 +1790,7 @@ for name in dircf:
     o=0
 
 
-    ########REFRACTION INDEX FROM WATERm=6.417+i*2.758 cited by Segelstein 1981
-    ag_mre=6.417
-    ag_mim=2.758
-    Waterm = ag_mre + 1.0j * ag_mim
+    # (Refraction index for water at 24 GHz is computed locally inside ScatExt.)
 
 
     #Initially parocesser parameters
@@ -1797,38 +1811,42 @@ for name in dircf:
     TimeCounter=0
     Cont=0
     #START THE DATA READING
-    print(datetime.datetime.now())
+    if _verbose:
+        print(datetime.datetime.now())
     ContPlot=0
     countwork=0
+    record_idx=0
+    parse_phase=''
     
 
     while 1:
-        
-        
-        if countwork==7:
-            sys.stdout.write('\b\b\b\b\b\b\b-------\r')
-            countwork=0
-        if countwork==0:
-            sys.stdout.write('working')
-            
-        if countwork==6:
-            sys.stdout.write('\b\b\b\b\b\b\bw-rking\r')
-        
-        if countwork==5:
-            sys.stdout.write('\b\b\b\b\b\b\bwo-king\r')
-        
-        if countwork==4:
-            sys.stdout.write('\b\b\b\b\b\b\bwor-ing\r')
-        
-        if countwork==3:
-            sys.stdout.write('\b\b\b\b\b\b\bwork-ng\r')
-        
-        if countwork==2:
-            sys.stdout.write('\b\b\b\b\b\b\bworki-g\r')
-        
-        if countwork==1:
-            sys.stdout.write('\b\b\b\b\b\b\bworkin-\r')
-        
+
+
+        if _verbose:
+            if countwork==7:
+                sys.stdout.write('\b\b\b\b\b\b\b-------\r')
+                countwork=0
+            if countwork==0:
+                sys.stdout.write('working')
+
+            if countwork==6:
+                sys.stdout.write('\b\b\b\b\b\b\bw-rking\r')
+
+            if countwork==5:
+                sys.stdout.write('\b\b\b\b\b\b\bwo-king\r')
+
+            if countwork==4:
+                sys.stdout.write('\b\b\b\b\b\b\bwor-ing\r')
+
+            if countwork==3:
+                sys.stdout.write('\b\b\b\b\b\b\bwork-ng\r')
+
+            if countwork==2:
+                sys.stdout.write('\b\b\b\b\b\b\bworki-g\r')
+
+            if countwork==1:
+                sys.stdout.write('\b\b\b\b\b\b\bworkin-\r')
+
         countwork+=1
             
         
@@ -1903,70 +1921,89 @@ for name in dircf:
 
         
             
-        columns=line.split()
+        try:
+            parse_phase='M-line header'
+            subline=line
+            columns=line.split()
 
-        Date=columns[1] 
+            Date=columns[1]
 
-        
-        dat = datetime.datetime(year = 2000+int(Date[0:2]), month = int(Date[2:4]), day = int(Date[4:6]), hour = int(Date[6:8]), minute = int(Date[8:10]), second = int(Date[10:12]))
-        
-        dat=int(date2unix(dat))
 
-        timeList.append(dat-int(unix2date(dat).second))#fixs the time at 0 seconds
-        TypeDate=columns[2] 
-        DVS=columns[4] 
-        DSN=columns[6] #serial number
-        BW=columns[8] #Witdh band
-        CC=int(columns[10]) #Calibration constant
-        MDQ=columns[12:15] 
-                        
+            dat = datetime.datetime(year = 2000+int(Date[0:2]), month = int(Date[2:4]), day = int(Date[4:6]), hour = int(Date[6:8]), minute = int(Date[8:10]), second = int(Date[10:12]))
 
-        TypeFile=columns[16] 
+            dat=int(date2unix(dat))
 
-        
+            timeList.append(dat-int(unix2date(dat).second))#fixs the time at 0 seconds
+            TypeDate=columns[2]
+            DVS=columns[4]
+            DSN=columns[6] #serial number
+            BW=columns[8] #Witdh band
+            CC=int(columns[10]) #Calibration constant
+            MDQ=columns[12:15]
 
-        #Read the heigh parameters (second line from raw file)
-        H=f.readline()
-        H=H.strip()
-        Hcolum=H.split()
-        Hcolum=map(int,Hcolum[1:len(Hcolum)])#Get the height values and change to integer
-        if np.isnan(h0_opt):
-            Harray=np.fromiter(Hcolum,dtype=np.int)
-        else:
-            Harray=h0_opt+np.fromiter(Hcolum,dtype=np.int)
+
+            TypeFile=columns[16]
+
+
+
+            #Read the heigh parameters (second line from raw file)
+            parse_phase='H-line (heights)'
+            H=f.readline()
+            H=H.strip()
+            subline=H
+            Hcolum=H.split()
+            Hcolum=map(int,Hcolum[1:len(Hcolum)])#Get the height values and change to integer
+            if np.isnan(h0_opt):
+                Harray=np.fromiter(Hcolum,dtype=int)
+            else:
+                Harray=h0_opt+np.fromiter(Hcolum,dtype=int)
 ##        Harray=np.fromiter(Hcolum,dtype=np.int)
-        DeltaH=Harray[5]-Harray[4]#Height difference
+            DeltaH=Harray[5]-Harray[4]#Height difference
 
-        #Read the tranference function (third line from raw file)
-        FT=f.readline()
-        FT=FT.strip()
-        FTcolum=FT.split()
-        FTcolum=map(float,FTcolum[1:len(FTcolum)])
-        FTarray=np.fromiter(FTcolum,dtype=np.float)
-        vectorV=np.arange(0,64*fNy,fNy)
-        
+            #Read the tranference function (third line from raw file)
+            parse_phase='TF-line (transfer function)'
+            FT=f.readline()
+            FT=FT.strip()
+            subline=FT
+            FTcolum=FT.split()
+            FTcolum=map(float,FTcolum[1:len(FTcolum)])
+            FTarray=np.fromiter(FTcolum,dtype=float)
+            vectorV=np.arange(0,64*fNy,fNy)
 
-        #constant value to conevrt F to f, include all constants, and the possible correction from M
-        Cte=DeltaH*float(CC)/(Adjust_M*10**20)
-        
-        
-        #Read the values F from file
-        
-        FQ=[]
-        DataT=[]
-        
-        
-        Number_bins=64#is the number of heights from file
-        for j in range(Number_bins):
-            Data=f.readline()
-            Data=Data.strip()
-            Data=Data.split()
-            Dades1=map(int,Data[1:len(Data)]) #extract the title for eac line F00, F01, etc
-            Dades=np.fromiter(Dades1,dtype=np.int)
 
-            
-            FQ.append(Data[0])
-            DataT.append(Dades)
+            #constant value to conevrt F to f, include all constants, and the possible correction from M
+            Cte=DeltaH*float(CC)/(Adjust_M*10**20)
+
+
+            #Read the values F from file
+
+            FQ=[]
+            DataT=[]
+
+
+            Number_bins=64#is the number of heights from file
+            for j in range(Number_bins):
+                parse_phase='F%02d-line (spectral bin)' % j
+                Data=f.readline()
+                Data=Data.strip()
+                subline=Data
+                Data=Data.split()
+                Dades1=map(int,Data[1:len(Data)]) #extract the title for eac line F00, F01, etc
+                Dades=np.fromiter(Dades1,dtype=int)
+
+
+                FQ.append(Data[0])
+                DataT.append(Dades)
+        except (ValueError, IndexError, EOFError) as exc:
+            snippet = subline if isinstance(subline, str) else repr(subline)
+            sys.stderr.write(
+                '\n[parse error] file=%s record=%d phase=%s\n'
+                '              line=%r\n'
+                '              %s: %s\n'
+                % (NameFile, record_idx, parse_phase, snippet[:160],
+                   type(exc).__name__, exc))
+            raise
+        record_idx += 1
             
         Pot=[]
         
@@ -2188,7 +2225,118 @@ for name in dircf:
         nc_TypePrecipitation.units='none'
 
         nc_TypePrecipitation[:,:]=np.array(np.ma.masked_invalid(PrepTypeC),dtype='f')
-    print(datetime.datetime.now())
-    print('\r\n')
+    if _verbose:
+        print(datetime.datetime.now())
+        print('\r\n')
 
     dataset.close()
+    return os.path.abspath(filenameplot+'.nc')
+
+
+def process_directory(path, integration_time=60, height=None, calibration=1.0, verbose=True):
+    """Process every `.raw` file in a directory.
+
+    Returns
+    -------
+    list of str
+        Absolute paths to each produced `-processed.nc` file (sorted).
+    """
+    folder = path if path.endswith(os.sep) else path + os.sep
+    paths = sorted(glob.glob(folder + '*.raw'))
+    if verbose:
+        print('Found', len(paths), 'raw file(s) to process; integration time', integration_time, 's')
+        print('The script generates a netcdf file with the same name as each raw file\n')
+    out = []
+    for p in paths:
+        out.append(process_file(p,
+                                integration_time=integration_time,
+                                height=height,
+                                calibration=calibration,
+                                verbose=verbose))
+    return out
+
+
+def main(argv=None):
+    """CLI entry point. Parses arguments and dispatches to process_file or process_directory."""
+    if argv is None:
+        argv = sys.argv[1:]
+
+    h0_opt = np.nan
+    Adjust_M = 1.
+    path_arg = None
+    IntTime = None
+
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == '-t' or a == '--integration-time':
+            i += 1
+            if i >= len(argv):
+                sys.stderr.write('error: %s requires a value (seconds)\n' % a)
+                sys.exit(2)
+            IntTime = int(argv[i])
+        elif a.startswith('-t') and len(a) > 2:
+            IntTime = int(a[2:])
+        elif a.startswith('-h') and len(a) > 2:
+            h0_opt = float(a[2:])
+        elif a.startswith('-M') and len(a) > 2:
+            Adjust_M = float(a[2:])
+        elif a in ('--help', '-?'):
+            print('usage: python RaProM_3-11.py PATH [-t SECONDS] [-h<meters>] [-M<value>]')
+            print('  PATH         directory of .raw files, or a single .raw file')
+            print('  -t SECONDS   integration time in seconds (default: 60)')
+            print('  -h<meters>   override antenna height (e.g. -h100.8)')
+            print('  -M<value>    multiplicative bias for the calibration constant (e.g. -M0.78)')
+            sys.exit(0)
+        elif not a.startswith('-'):
+            if path_arg is not None:
+                sys.stderr.write('error: unexpected extra positional argument %r\n' % a)
+                sys.exit(2)
+            path_arg = a
+        else:
+            sys.stderr.write('error: unknown option %r\n' % a)
+            sys.exit(2)
+        i += 1
+
+    if not np.isnan(h0_opt):
+        print('\nThe antenna height has been changed to ', str(h0_opt), ' m\n')
+    if Adjust_M != 1.:
+        print('\nThe calibration constant has been adjusted by M ', str(Adjust_M), '\n')
+
+    interactive = path_arg is None
+    if interactive:
+        print('Insert the path where the raw are --for instance d:/Mrrdata/')
+        path_arg = input()
+
+    path_arg = os.path.expanduser(path_arg)
+
+    if IntTime is None:
+        if interactive:
+            print('Insert the number of seconds for integration (usually 60 seconds)')
+            IntTime = int(input())
+        else:
+            IntTime = 60
+
+    height = None if np.isnan(h0_opt) else float(h0_opt)
+
+    if os.path.isdir(path_arg):
+        process_directory(path_arg,
+                          integration_time=IntTime,
+                          height=height,
+                          calibration=Adjust_M)
+    elif os.path.isfile(path_arg):
+        if not path_arg.endswith('.raw'):
+            sys.stderr.write('warning: %r does not end with .raw\n' % path_arg)
+        print('Found 1 raw file to process; integration time', IntTime, 's')
+        print('The script generates a netcdf file with the same name as the raw file\n')
+        process_file(path_arg,
+                     integration_time=IntTime,
+                     height=height,
+                     calibration=Adjust_M)
+    else:
+        sys.stderr.write('error: path not found: %r\n' % path_arg)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

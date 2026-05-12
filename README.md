@@ -13,17 +13,7 @@ https://doi.org/10.3390/rs12244113
 
 ## Versions and dependences
 
-The main script is called RaProM.py and it is available in python 2.7., 3.8. ,and 3.11. The following libraries are necessary:
-
-For 2.7 and 3.8. python version
-
-	numpy , version 1.14.5 or later until 1.19.
-
-	miepython, version 1.3.0 or later (matplotlib is necessary for this library works)
-
-	netCDF4, version 1.2.7 or later(cftime is necessary for this library works)
-
-For 3.11 pyhton version
+The main script is called RaProM_3-11.py and requires Python 3.11 or later. The following libraries are necessary:
 
 	numpy , version 1.21.6
 
@@ -80,51 +70,80 @@ The script produces the following outputs from MRR raw data:<br />
 Notice that PIA and PIA_all have 1 height bin more, because the first element is at 0 m height a.g.l. imposed by the manufacturer
 
 ## How to execute the script
-The script can be executed from a command line at the system prompt (see MS-Windows example):<br />
-<br />
-![commandWindow](https://user-images.githubusercontent.com/35369817/67784656-64703d00-fa6c-11e9-94fa-0e616d703168.JPG)
-<br />
-at the directory where RaProM_XX.py has been copied, where XX is 27, 38, or 3-11 in function of your python version:
-```
-python RaProM_XX.py
+The script is run from a command line. The path to the data is passed as an argument; it can be either a directory of `.raw` files (all of them are processed) or a single `.raw` file.
 
 ```
-
-The script has some additional command line execution options. Please note that their use may imply a substantial increase of the netcdf output file (see below). Command line options are (more than one is possible, in any order):<br /> 
-<br /> 
-**<i>-hxxx</i>**: this option forces the MRR antenna height to be at xxx meters above sea level which is important if the height was not correctly configured in the original raw data file. xxx can be a float or an integer value.<br />
-<br /> 
-**<i>-Myyy</i>**: this option modifies the MRR radar constant so it will affect Z, RR and other variables. M is the multiplicative bias calculated by comparing the MRR rainfall (RR_MRR) with a reference rainfall value such as a rain gauge (RR_REF), M=RR_MRR/RR_REF. M can be a float or an integer, typically close to 1.<br />
-<br /> 
-
-The syntax of these options are:
+python RaProM_3-11.py PATH [-t SECONDS] [-h<meters>] [-M<value>]
 ```
-python RaProM_XX.py -h100.8
 
+Arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `PATH` | Directory of `.raw` files **or** a single `.raw` file. Required. |
+| `-t SECONDS` | Integration time in seconds. Default: `60`. Also accepts `-t60` (no space) and `--integration-time 60`. |
+| `-h<meters>` | Override the MRR antenna height (above sea level) when it was not configured correctly in the raw file. Float or integer, e.g. `-h100.8`. |
+| `-M<value>` | Multiplicative bias for the MRR calibration constant. Affects Z, RR, and other derived variables. `M = RR_MRR / RR_REF`, typically close to 1. Float or integer, e.g. `-M0.78`. |
+| `--help`, `-?` | Print the usage message and exit. |
+
+Examples:
+
+Process every raw file in a directory with the default 60 s integration time:
 ```
-This example forces the antenna height to be at 100.8 m above sea level.<br />
+python RaProM_3-11.py /path/to/mrrdata/
 ```
-python RaProM_XX.py -M0.78
 
+Process a single raw file:
 ```
-This example assumes a multiplicative bias of 0.87 between MRR2 and reference rainfall.<br />
-
-The script asks the directory where the raw files to be processed are located (it will process all the MRR raw files of the folder selected), for example:
+python RaProM_3-11.py /path/to/mrrdata/0520.raw
 ```
-C:\mrrdata\test\
+
+Override the antenna height and use a 30 s integration time:
 ```
-**NOTE 1: the path must end with \\ in Windows or a / in Linux**<br />
-**NOTE 2: Be careful to avoid using spaces and special characters in your file path.**<br />
+python RaProM_3-11.py /path/to/mrrdata/ -t 30 -h100.8
+```
 
+Apply a calibration bias of 0.78:
+```
+python RaProM_3-11.py /path/to/mrrdata/ -M0.78
+```
 
-The script asks for the integration time (in seconds, usually 60)
+For each input file, the result is written to a netCDF file in the same directory with the suffix `-processed.nc` (e.g. `0520.raw` → `0520-processed.nc`).
 
-The script indicates the number of raw files in the folder and starts the process.
+**NOTE:** Avoid using spaces and special characters in your file path.
 
-The result is stored in a netcdf file with the same name but finished "-processed"
+If `PATH` is omitted, the script falls back to the older interactive prompts (asks for the directory and the integration time). New code should prefer the CLI form above.
+
+You can also invoke the module form:
+```
+python -m raprom /path/to/mrrdata/
+```
+
+## Using from a notebook or another Python script
+The processing is exposed as plain Python functions in the `raprom` module, so it can be driven from a Jupyter notebook or another script:
+
+```python
+import raprom
+
+# Process one file. Returns the absolute path of the produced netCDF.
+out = raprom.process_file('/path/to/0520.raw',
+                          integration_time=60,   # default 60
+                          height=None,           # None → use value from raw
+                          calibration=1.0,       # M, default 1.0
+                          verbose=False)         # silence the spinner
+
+# Process every .raw file in a directory. Returns a list of paths.
+outs = raprom.process_directory('/path/to/mrrdata/', verbose=False)
+
+# Open the result with xarray (or netCDF4) for analysis.
+import xarray as xr
+ds = xr.open_dataset(out)
+```
+
+The CLI shim (`python RaProM_3-11.py ...`) and `python -m raprom ...` both call `raprom.main()` internally, so all three entry points share the same argument handling.
 
 ## Do you have any problem with your data?
-If so, your RAW files may be corrupted. There is a new script for this called CorrecRawFiles-py_XX.py .
+If so, your RAW files may be corrupted. There is a new script for this called CorrecRawFiles-py_3-11.py .
 This script analyses every line in the original RAW file and fixes it. If errors are found, a new file with 
 the same name but finished as -corrected will be created.
 To execute the script follow the same steps described above.
